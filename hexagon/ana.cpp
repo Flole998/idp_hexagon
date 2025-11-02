@@ -144,10 +144,10 @@ static uint32_t new_value( uint32_t nt, bool hvx = false )
     // TODO: check if duplexes have to be supported
     {
         const op_t *op = temp.ops;
-        assert( op->type == o_reg );
+        if( op->type != o_reg ) goto __cleanup;
         if( !hvx )
         {
-            assert( (nt & 1) == 0 );
+            if( (nt & 1) != 0 ) goto __cleanup;
             result = op->reg;
         }
         else // hvx
@@ -269,15 +269,16 @@ static void op_mem_locked( op_t &op, uint32_t type, uint32_t rs, uint32_t pd = 0
     op.specflag2 = pd;
 }
 
-static void op_mem_ind_off( op_t &op, uint32_t type, uint32_t rs, uint32_t ru, uint32_t imm )
+static bool op_mem_ind_off( op_t &op, uint32_t type, uint32_t rs, uint32_t ru, uint32_t imm )
 {
     // memXX(Rs + Ru << #u2)
-    assert( rs < 256 && ru < 256 && imm < 4 );
+    if( rs >= 256 || ru >= 256 || imm >= 4 ) return false;
     op.type = o_mem_ind_off;
     op.specval = type;
     op.dtype = mem_dtype( type );
     op.reg = (rs << 8) | ru;
     op.value = imm;
+    return true;
 }
 
 static void op_mem_inc( op_t &op, uint32_t otype, uint32_t type, uint32_t rx, int32_t inc, uint32_t mu = 0 )
@@ -321,7 +322,7 @@ static void op_pcrel( op_t &op, int32_t offset )
 static __inline uint8_t gen_sub_reg( uint32_t v )
 {
     // r0..r7, r16..r23
-    assert( v < 16 );
+    if( v >= 16 ) return 0xFF;
     return REG_R( v + (v < 8? 0 : 8) );
 };
 
@@ -333,6 +334,7 @@ static uint32_t iclass_1_CJ( uint32_t word, uint64_t extender, op_t *ops, uint32
 {
     if( BIT(0) != 0 ) return 0;
     uint32_t rs = gen_sub_reg( BITS(19:16) ), rt = gen_sub_reg( BITS(11:8) );
+    if( rs == 0xFF || rt == 0xFF ) return 0;
     int32_t off = EXTEND( (SBITS(21:20) << 7) | BITS(7:1), 2 );
 
     if( BITS(27:26) == 0 && BITS(24:23) != 0b11 )
@@ -456,7 +458,8 @@ static uint32_t iclass_3_V4LDST( uint32_t word, uint64_t extender, op_t *ops, ui
         op_reg( ops[PRED_A], pv, (BIT(24)? REG_PRE_NOT : 0) |
                                  (BIT(25)? REG_POST_NEW : 0) );
         op_reg( ops[0], rt, type == MEM_D? REG_DOUBLE : 0 );
-        op_mem_ind_off( ops[1], type, rs, ru, (BIT(13) << 1) | BIT(7) );
+        if( !op_mem_ind_off( ops[1], type, rs, ru, (BIT(13) << 1) | BIT(7) ) )
+            return 0;
         return Hex_mov;
     }
     else if( BITS(27:26) == 0b01 )
@@ -469,7 +472,8 @@ static uint32_t iclass_3_V4LDST( uint32_t word, uint64_t extender, op_t *ops, ui
         flags = PRED_REG;
         op_reg( ops[PRED_A], pv, (BIT(24)? REG_PRE_NOT : 0) |
                                  (BIT(25)? REG_POST_NEW : 0) );
-        op_mem_ind_off( ops[0], type, rs, ru, (BIT(13) << 1) | BIT(7) );
+        if( !op_mem_ind_off( ops[0], type, rs, ru, (BIT(13) << 1) | BIT(7) ) )
+            return 0;
         op_reg( ops[1], code == 5? new_value( BITS(2:0) ) : rt,
                         code == 5? REG_POST_NEW :
                         code == 3? REG_POST_HI :
@@ -496,7 +500,8 @@ static uint32_t iclass_3_V4LDST( uint32_t word, uint64_t extender, op_t *ops, ui
         if( type == 255 ) return 0;
 
         op_reg( ops[0], rt, type == MEM_D? REG_DOUBLE : 0 );
-        op_mem_ind_off( ops[1], type, rs, ru, (BIT(13) << 1) | BIT(7) );
+        if( !op_mem_ind_off( ops[1], type, rs, ru, (BIT(13) << 1) | BIT(7) ) )
+            return 0;
         return Hex_mov;
     }
     else if( BITS(27:24) == 0b1011 && BITS(6:5) == 0 )
@@ -506,7 +511,8 @@ static uint32_t iclass_3_V4LDST( uint32_t word, uint64_t extender, op_t *ops, ui
         uint32_t type = (code != 5)? types_st[ code ] : types_nv[ BITS(4:3) ];
         if( type == 255 ) return 0;
 
-        op_mem_ind_off( ops[0], type, rs, ru, (BIT(13) << 1) | BIT(7) );
+        if( !op_mem_ind_off( ops[0], type, rs, ru, (BIT(13) << 1) | BIT(7) ) )
+            return 0;
         op_reg( ops[1], code == 5? new_value( BITS(2:0) ) : rt,
                         code == 5? REG_POST_NEW :
                         code == 3? REG_POST_HI :
@@ -4756,7 +4762,7 @@ static bool decode_single( insn_t &insn, uint32_t word, uint64_t extender )
 
 static __inline uint8_t duplex_dreg( uint32_t v )
 {
-    assert( v < 8 );
+    if( v >= 8 ) return 0xFF;
     return REG_R( 2*v + (v < 4? 0 : 8) );
 };
 
@@ -4764,10 +4770,13 @@ static uint8_t duplex_L1( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
 {
     // Rd16 = mem[ub|w](Rs16+#Ii)
     bool memub = BITS(12:12) != 0;
-    op_reg( ops[0], gen_sub_reg( BITS(3:0) ) );
+    uint32_t rd = gen_sub_reg( BITS(3:0) );
+    uint32_t rs = gen_sub_reg( BITS(7:4) );
+    if( rd == 0xFF || rs == 0xFF ) return 0;
+    op_reg( ops[0], rd );
     op_mem_ind( ops[1],
         memub? MEM_UB : MEM_W,
-        gen_sub_reg( BITS(7:4) ),
+        rs,
         BITS(11:8) << (memub? 0 : 2)
     );
     return Hex_mov;
@@ -4777,12 +4786,15 @@ static uint8_t duplex_S1( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
 {
     // mem[b|w](Rs16+#Ii) = Rt16
     bool memb = BITS(12:12) != 0;
+    uint32_t rs = gen_sub_reg( BITS(7:4) );
+    uint32_t rt = gen_sub_reg( BITS(3:0) );
+    if( rs == 0xFF || rt == 0xFF ) return 0;
     op_mem_ind( ops[0],
         memb? MEM_B : MEM_W,
-        gen_sub_reg( BITS(7:4) ),
+        rs,
         BITS(11:8) << (memb? 0 : 2)
     );
-    op_reg( ops[1], gen_sub_reg( BITS(3:0) ) );
+    op_reg( ops[1], rt );
     return Hex_mov;
 }
 
@@ -4792,10 +4804,13 @@ static uint8_t duplex_L2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     if( target != 3 )
     {
         // Rd16 = mem[h|uh|b](Rs16+#Ii)
-        op_reg( ops[0], gen_sub_reg( BITS(3:0) ) );
+        uint32_t rd = gen_sub_reg( BITS(3:0) );
+        uint32_t rs = gen_sub_reg( BITS(7:4) );
+        if( rd == 0xFF || rs == 0xFF ) return 0;
+        op_reg( ops[0], rd );
         op_mem_ind( ops[1],
             target == 0? MEM_H : target == 1? MEM_UH : MEM_B,
-            gen_sub_reg( BITS(7:4) ),
+            rs,
             BITS(10:8) << (target == 2? 0 : 1)
         );
         return Hex_mov;
@@ -4803,7 +4818,9 @@ static uint8_t duplex_L2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     if( BITS(10:9) == 0b10 )
     {
         // Rd16 = memw(r29+#Ii)
-        op_reg( ops[0], gen_sub_reg( BITS(3:0) ) );
+        uint32_t rd = gen_sub_reg( BITS(3:0) );
+        if( rd == 0xFF ) return 0;
+        op_reg( ops[0], rd );
         op_mem_ind( ops[1],
             MEM_W,
             REG_SP,
@@ -4814,7 +4831,9 @@ static uint8_t duplex_L2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     if( BITS(10:8) == 0b110 )
     {
         // Rdd8 = memd(r29+#Ii)
-        op_reg( ops[0], duplex_dreg( BITS(2:0) ), REG_DOUBLE );
+        uint32_t rdd = duplex_dreg( BITS(2:0) );
+        if( rdd == 0xFF ) return 0;
+        op_reg( ops[0], rdd, REG_DOUBLE );
         op_mem_ind( ops[1],
             MEM_D,
             REG_SP,
@@ -4857,43 +4876,52 @@ static uint8_t duplex_S2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     if( BITS(12:11) == 0b00 )
     {
         // memh(Rs16+#Ii) = Rt16
+        uint32_t rs = gen_sub_reg( BITS(7:4) );
+        uint32_t rt = gen_sub_reg( BITS(3:0) );
+        if( rs == 0xFF || rt == 0xFF ) return 0;
         op_mem_ind( ops[0],
             MEM_H,
-            gen_sub_reg( BITS(7:4) ),
+            rs,
             BITS(10:8) << 1
         );
-        op_reg( ops[1], gen_sub_reg( BITS(3:0) ) );
+        op_reg( ops[1], rt );
         return Hex_mov;
     }
     if( BITS(12:9) == 0b0100 )
     {
         // memw(r29+#Ii) = Rt16
+        uint32_t rt = gen_sub_reg( BITS(3:0) );
+        if( rt == 0xFF ) return 0;
         op_mem_ind( ops[0],
             MEM_W,
             REG_SP,
             BITS(8:4) << 2
         );
-        op_reg( ops[1], gen_sub_reg( BITS(3:0) ) );
+        op_reg( ops[1], rt );
         return Hex_mov;
     }
     if( BITS(12:9) == 0b0101 )
     {
         // memd(r29+#Ii) = Rtt8
+        uint32_t rtt = duplex_dreg( BITS(2:0) );
+        if( rtt == 0xFF ) return 0;
         op_mem_ind( ops[0],
             MEM_D,
             REG_SP,
             SBITS(8:3) << 3
         );
-        op_reg( ops[1], duplex_dreg( BITS(2:0) ), REG_DOUBLE );
+        op_reg( ops[1], rtt, REG_DOUBLE );
         return Hex_mov;
     }
     if( BITS(12:10) == 0b100 )
     {
         // mem[b|w](Rs16+#Ii) = #[0|1]
         bool memb = BIT(9) != 0;
+        uint32_t rs = gen_sub_reg( BITS(7:4) );
+        if( rs == 0xFF ) return 0;
         op_mem_ind( ops[0],
             memb? MEM_B : MEM_W,
-            gen_sub_reg( BITS(7:4) ),
+            rs,
             BITS(3:0) << (memb? 0 : 2)
         );
         op_imm( ops[1], BIT(8) );
@@ -4917,6 +4945,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rx16 = add(Rx16in,#Ii) [EXT]
         uint32_t rx = gen_sub_reg( d4 );
+        if( rx == 0xFF ) return 0;
         op_reg( ops[0], rx );
         op_reg( ops[1], rx );
         op_imm( ops[2], EXTEND( SBITS(10:4), 0 ), true, extended );
@@ -4925,22 +4954,29 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     if( BITS(12:10) == 0b010 )
     {
         // Rd16 = #Ii [EXT]
-        op_reg( ops[0], gen_sub_reg( d4 ) );
+        uint32_t rd = gen_sub_reg( d4 );
+        if( rd == 0xFF ) return 0;
+        op_reg( ops[0], rd );
         op_imm( ops[1], EXTEND( BITS(9:4), 0 ), false, extended );
         return Hex_mov;
     }
     if( BITS(12:10) == 0b011 )
     {
         // Rd16 = add(r29,#Ii)
-        op_reg( ops[0], gen_sub_reg( d4 ) );
+        uint32_t rd = gen_sub_reg( d4 );
+        if( rd == 0xFF ) return 0;
+        op_reg( ops[0], rd );
         op_reg( ops[1], REG_SP );
         op_imm( ops[2], BITS(9:4) << 2 );
         return Hex_add;
     }
     if( BITS(12:11) == 0b10 )
     {
-        op_reg( ops[0], gen_sub_reg( d4 ) );
-        op_reg( ops[1], gen_sub_reg( s4 ) );
+        uint32_t rd = gen_sub_reg( d4 );
+        uint32_t rs = gen_sub_reg( s4 );
+        if( rd == 0xFF || rs == 0xFF ) return 0;
+        op_reg( ops[0], rd );
+        op_reg( ops[1], rs );
         switch( BITS(10:8) )
         {
         case 0: return Hex_mov;  // Rd16 = Rs16
@@ -4960,16 +4996,20 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rx16 = add(Rx16in,Rs16)
         uint32_t rx = gen_sub_reg( d4 );
+        uint32_t rs = gen_sub_reg( s4 );
+        if( rx == 0xFF || rs == 0xFF ) return 0;
         op_reg( ops[0], rx );
         op_reg( ops[1], rx );
-        op_reg( ops[2], gen_sub_reg( s4 ) );
+        op_reg( ops[2], rs );
         return Hex_add;
     }
     if( BITS(12:8) == 0b11001 && BITS(3:2) == 0b00 )
     {
         // p0 = cmp.eq(Rs16,#Ii)
+        uint32_t rs = gen_sub_reg( s4 );
+        if( rs == 0xFF ) return 0;
         op_reg( ops[0], REG_P0 );
-        op_reg( ops[1], gen_sub_reg( s4 ) );
+        op_reg( ops[1], rs );
         op_imm( ops[2], d4 );
         flags = CMP_EQ;
         return Hex_cmp;
@@ -4977,16 +5017,20 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     if( BITS(12:4) == 0b110100000 )
     {
         // Rd16 = #n1
-        op_reg( ops[0], gen_sub_reg( d4 ) );
+        uint32_t rd = gen_sub_reg( d4 );
+        if( rd == 0xFF ) return 0;
+        op_reg( ops[0], rd );
         op_imm( ops[1], -1, true );
         return Hex_mov;
     }
     if( BITS(12:6) == 0b1101001 )
     {
         // if ([!]p0[.new]) Rd16 = #0
+        uint32_t rd = gen_sub_reg( d4 );
+        if( rd == 0xFF ) return 0;
         op_reg( ops[PRED_A], REG_P0, (BIT(4)? REG_PRE_NOT : 0) |
                                      (BIT(5)? 0 : REG_POST_NEW) );
-        op_reg( ops[0], gen_sub_reg( d4 ) );
+        op_reg( ops[0], rd );
         op_imm( ops[1], 0 );
         flags = PRED_REG;
         return Hex_mov;
@@ -4994,7 +5038,9 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     if( BITS(12:7) == 0b111000 )
     {
         // Rdd8 = combine(#i,#Ii)
-        op_reg( ops[0], duplex_dreg( BITS(2:0) ), REG_DOUBLE );
+        uint32_t rdd = duplex_dreg( BITS(2:0) );
+        if( rdd == 0xFF ) return 0;
+        op_reg( ops[0], rdd, REG_DOUBLE );
         if( BITS(4:3) == 0 ) {
             op_imm( ops[1], BITS(6:5) );
             return Hex_mov; // simplify
@@ -5007,7 +5053,9 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rdd8 = combine(Rs16,#0)
         uint32_t rs = gen_sub_reg( BITS(7:4) );
-        op_reg( ops[0], duplex_dreg( BITS(2:0) ), REG_DOUBLE );
+        uint32_t rdd = duplex_dreg( BITS(2:0) );
+        if( rs == 0xFF || rdd == 0xFF ) return 0;
+        op_reg( ops[0], rdd, REG_DOUBLE );
         if( BIT(3) == 0 ) {
             op_imm( ops[1], 0 );
             op_reg( ops[2], rs );
