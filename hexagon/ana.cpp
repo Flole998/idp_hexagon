@@ -26,6 +26,9 @@
 #define FLG_T(f)                    (((f) >> 20) & 0x3FF)
 #define REG_POST__                  0
 
+// Error marker for invalid register
+#define INVALID_REG                 0xFF
+
 //
 // packet parsing
 //
@@ -144,6 +147,8 @@ static uint32_t new_value( uint32_t nt, bool hvx = false )
     // TODO: check if duplexes have to be supported
     {
         const op_t *op = temp.ops;
+        // Note: Using goto __cleanup instead of early return to ensure
+        // saved globals are restored before returning
         if( op->type != o_reg ) goto __cleanup;
         if( !hvx )
         {
@@ -322,7 +327,7 @@ static void op_pcrel( op_t &op, int32_t offset )
 static __inline uint8_t gen_sub_reg( uint32_t v )
 {
     // r0..r7, r16..r23
-    if( v >= 16 ) return 0xFF;
+    if( v >= 16 ) return INVALID_REG;
     return REG_R( v + (v < 8? 0 : 8) );
 };
 
@@ -334,7 +339,7 @@ static uint32_t iclass_1_CJ( uint32_t word, uint64_t extender, op_t *ops, uint32
 {
     if( BIT(0) != 0 ) return 0;
     uint32_t rs = gen_sub_reg( BITS(19:16) ), rt = gen_sub_reg( BITS(11:8) );
-    if( rs == 0xFF || rt == 0xFF ) return 0;
+    if( rs == INVALID_REG || rt == INVALID_REG ) return 0;
     int32_t off = EXTEND( (SBITS(21:20) << 7) | BITS(7:1), 2 );
 
     if( BITS(27:26) == 0 && BITS(24:23) != 0b11 )
@@ -4762,7 +4767,7 @@ static bool decode_single( insn_t &insn, uint32_t word, uint64_t extender )
 
 static __inline uint8_t duplex_dreg( uint32_t v )
 {
-    if( v >= 8 ) return 0xFF;
+    if( v >= 8 ) return INVALID_REG;
     return REG_R( 2*v + (v < 4? 0 : 8) );
 };
 
@@ -4772,7 +4777,7 @@ static uint8_t duplex_L1( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     bool memub = BITS(12:12) != 0;
     uint32_t rd = gen_sub_reg( BITS(3:0) );
     uint32_t rs = gen_sub_reg( BITS(7:4) );
-    if( rd == 0xFF || rs == 0xFF ) return 0;
+    if( rd == INVALID_REG || rs == INVALID_REG ) return 0;
     op_reg( ops[0], rd );
     op_mem_ind( ops[1],
         memub? MEM_UB : MEM_W,
@@ -4788,7 +4793,7 @@ static uint8_t duplex_S1( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     bool memb = BITS(12:12) != 0;
     uint32_t rs = gen_sub_reg( BITS(7:4) );
     uint32_t rt = gen_sub_reg( BITS(3:0) );
-    if( rs == 0xFF || rt == 0xFF ) return 0;
+    if( rs == INVALID_REG || rt == INVALID_REG ) return 0;
     op_mem_ind( ops[0],
         memb? MEM_B : MEM_W,
         rs,
@@ -4806,7 +4811,7 @@ static uint8_t duplex_L2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
         // Rd16 = mem[h|uh|b](Rs16+#Ii)
         uint32_t rd = gen_sub_reg( BITS(3:0) );
         uint32_t rs = gen_sub_reg( BITS(7:4) );
-        if( rd == 0xFF || rs == 0xFF ) return 0;
+        if( rd == INVALID_REG || rs == INVALID_REG ) return 0;
         op_reg( ops[0], rd );
         op_mem_ind( ops[1],
             target == 0? MEM_H : target == 1? MEM_UH : MEM_B,
@@ -4819,7 +4824,7 @@ static uint8_t duplex_L2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     {
         // Rd16 = memw(r29+#Ii)
         uint32_t rd = gen_sub_reg( BITS(3:0) );
-        if( rd == 0xFF ) return 0;
+        if( rd == INVALID_REG ) return 0;
         op_reg( ops[0], rd );
         op_mem_ind( ops[1],
             MEM_W,
@@ -4832,7 +4837,7 @@ static uint8_t duplex_L2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     {
         // Rdd8 = memd(r29+#Ii)
         uint32_t rdd = duplex_dreg( BITS(2:0) );
-        if( rdd == 0xFF ) return 0;
+        if( rdd == INVALID_REG ) return 0;
         op_reg( ops[0], rdd, REG_DOUBLE );
         op_mem_ind( ops[1],
             MEM_D,
@@ -4878,7 +4883,7 @@ static uint8_t duplex_S2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
         // memh(Rs16+#Ii) = Rt16
         uint32_t rs = gen_sub_reg( BITS(7:4) );
         uint32_t rt = gen_sub_reg( BITS(3:0) );
-        if( rs == 0xFF || rt == 0xFF ) return 0;
+        if( rs == INVALID_REG || rt == INVALID_REG ) return 0;
         op_mem_ind( ops[0],
             MEM_H,
             rs,
@@ -4891,7 +4896,7 @@ static uint8_t duplex_S2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     {
         // memw(r29+#Ii) = Rt16
         uint32_t rt = gen_sub_reg( BITS(3:0) );
-        if( rt == 0xFF ) return 0;
+        if( rt == INVALID_REG ) return 0;
         op_mem_ind( ops[0],
             MEM_W,
             REG_SP,
@@ -4904,7 +4909,7 @@ static uint8_t duplex_S2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
     {
         // memd(r29+#Ii) = Rtt8
         uint32_t rtt = duplex_dreg( BITS(2:0) );
-        if( rtt == 0xFF ) return 0;
+        if( rtt == INVALID_REG ) return 0;
         op_mem_ind( ops[0],
             MEM_D,
             REG_SP,
@@ -4918,7 +4923,7 @@ static uint8_t duplex_S2( uint32_t word, uint64_t /*extender*/, op_t *ops, uint3
         // mem[b|w](Rs16+#Ii) = #[0|1]
         bool memb = BIT(9) != 0;
         uint32_t rs = gen_sub_reg( BITS(7:4) );
-        if( rs == 0xFF ) return 0;
+        if( rs == INVALID_REG ) return 0;
         op_mem_ind( ops[0],
             memb? MEM_B : MEM_W,
             rs,
@@ -4945,7 +4950,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rx16 = add(Rx16in,#Ii) [EXT]
         uint32_t rx = gen_sub_reg( d4 );
-        if( rx == 0xFF ) return 0;
+        if( rx == INVALID_REG ) return 0;
         op_reg( ops[0], rx );
         op_reg( ops[1], rx );
         op_imm( ops[2], EXTEND( SBITS(10:4), 0 ), true, extended );
@@ -4955,7 +4960,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rd16 = #Ii [EXT]
         uint32_t rd = gen_sub_reg( d4 );
-        if( rd == 0xFF ) return 0;
+        if( rd == INVALID_REG ) return 0;
         op_reg( ops[0], rd );
         op_imm( ops[1], EXTEND( BITS(9:4), 0 ), false, extended );
         return Hex_mov;
@@ -4964,7 +4969,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rd16 = add(r29,#Ii)
         uint32_t rd = gen_sub_reg( d4 );
-        if( rd == 0xFF ) return 0;
+        if( rd == INVALID_REG ) return 0;
         op_reg( ops[0], rd );
         op_reg( ops[1], REG_SP );
         op_imm( ops[2], BITS(9:4) << 2 );
@@ -4974,7 +4979,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         uint32_t rd = gen_sub_reg( d4 );
         uint32_t rs = gen_sub_reg( s4 );
-        if( rd == 0xFF || rs == 0xFF ) return 0;
+        if( rd == INVALID_REG || rs == INVALID_REG ) return 0;
         op_reg( ops[0], rd );
         op_reg( ops[1], rs );
         switch( BITS(10:8) )
@@ -4997,7 +5002,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
         // Rx16 = add(Rx16in,Rs16)
         uint32_t rx = gen_sub_reg( d4 );
         uint32_t rs = gen_sub_reg( s4 );
-        if( rx == 0xFF || rs == 0xFF ) return 0;
+        if( rx == INVALID_REG || rs == INVALID_REG ) return 0;
         op_reg( ops[0], rx );
         op_reg( ops[1], rx );
         op_reg( ops[2], rs );
@@ -5007,7 +5012,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // p0 = cmp.eq(Rs16,#Ii)
         uint32_t rs = gen_sub_reg( s4 );
-        if( rs == 0xFF ) return 0;
+        if( rs == INVALID_REG ) return 0;
         op_reg( ops[0], REG_P0 );
         op_reg( ops[1], rs );
         op_imm( ops[2], d4 );
@@ -5018,7 +5023,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rd16 = #n1
         uint32_t rd = gen_sub_reg( d4 );
-        if( rd == 0xFF ) return 0;
+        if( rd == INVALID_REG ) return 0;
         op_reg( ops[0], rd );
         op_imm( ops[1], -1, true );
         return Hex_mov;
@@ -5027,7 +5032,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // if ([!]p0[.new]) Rd16 = #0
         uint32_t rd = gen_sub_reg( d4 );
-        if( rd == 0xFF ) return 0;
+        if( rd == INVALID_REG ) return 0;
         op_reg( ops[PRED_A], REG_P0, (BIT(4)? REG_PRE_NOT : 0) |
                                      (BIT(5)? 0 : REG_POST_NEW) );
         op_reg( ops[0], rd );
@@ -5039,7 +5044,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
     {
         // Rdd8 = combine(#i,#Ii)
         uint32_t rdd = duplex_dreg( BITS(2:0) );
-        if( rdd == 0xFF ) return 0;
+        if( rdd == INVALID_REG ) return 0;
         op_reg( ops[0], rdd, REG_DOUBLE );
         if( BITS(4:3) == 0 ) {
             op_imm( ops[1], BITS(6:5) );
@@ -5054,7 +5059,7 @@ static uint8_t duplex_A( uint32_t word, uint64_t extender, op_t *ops, uint32_t &
         // Rdd8 = combine(Rs16,#0)
         uint32_t rs = gen_sub_reg( BITS(7:4) );
         uint32_t rdd = duplex_dreg( BITS(2:0) );
-        if( rs == 0xFF || rdd == 0xFF ) return 0;
+        if( rs == INVALID_REG || rdd == INVALID_REG ) return 0;
         op_reg( ops[0], rdd, REG_DOUBLE );
         if( BIT(3) == 0 ) {
             op_imm( ops[1], 0 );
