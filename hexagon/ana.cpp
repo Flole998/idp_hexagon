@@ -148,7 +148,7 @@ static uint32_t new_value( uint32_t nt, bool hvx = false )
     {
         const op_t *op = temp.ops;
         // Note: Using goto __cleanup instead of early return to ensure
-        // saved globals are restored before returning
+        // s_pkt_start and s_insn_ea globals are restored before returning
         if( op->type != o_reg ) goto __cleanup;
         if( !hvx )
         {
